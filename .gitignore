@@ -1,0 +1,4 @@
+/target
+/agent-tools
+.env
+*.log

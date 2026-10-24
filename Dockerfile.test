@@ -1,0 +1,38 @@
+FROM rust:1.88-bookworm
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends unzip postgresql \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fL --retry 3 -o /tmp/rustfs.zip \
+        https://github.com/rustfs/rustfs/releases/download/1.0.3/rustfs-linux-x86_64-musl-v1.0.3.zip \
+    && unzip -q /tmp/rustfs.zip -d /opt/rustfs-oracle \
+    && chmod +x /opt/rustfs-oracle/rustfs \
+    && rm /tmp/rustfs.zip
+
+WORKDIR /src
+COPY Cargo.toml Cargo.lock ./
+RUN cargo fetch
+
+RUN printf '%s\n' \
+    '#!/bin/sh' \
+    'set -eu' \
+    'bin=$(echo /usr/lib/postgresql/*/bin)' \
+    'PGDATA=/tmp/pgdata' \
+    'install -d -o postgres -g postgres "$PGDATA"' \
+    'su postgres -c "$bin/initdb -D $PGDATA --auth-local=trust --auth-host=trust >/tmp/initdb.log"' \
+    'printf "%s\n" "listen_addresses = '\''127.0.0.1'\''" >> "$PGDATA/postgresql.conf"' \
+    'su postgres -c "$bin/pg_ctl -D $PGDATA -l /tmp/pg.log -w start"' \
+    'su postgres -c "$bin/psql -d postgres -v ON_ERROR_STOP=1 -c '\''CREATE ROLE pgstore LOGIN SUPERUSER'\''"' \
+    'su postgres -c "$bin/psql -d postgres -v ON_ERROR_STOP=1 -c '\''CREATE DATABASE pgstore OWNER pgstore'\''"' \
+    'status=0' \
+    'cargo test || status=$?' \
+    'su postgres -c "$bin/pg_ctl -D $PGDATA -w stop" || true' \
+    'exit "$status"' \
+    > /usr/local/bin/pgs3-test \
+    && chmod +x /usr/local/bin/pgs3-test
+
+ENV DATABASE_URL=postgres://pgstore@127.0.0.1/pgstore \
+    RUSTFS_BIN=/opt/rustfs-oracle/rustfs
+
+ENTRYPOINT ["/usr/local/bin/pgs3-test"]
